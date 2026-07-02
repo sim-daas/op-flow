@@ -1,0 +1,38 @@
+# Core vision & numerics
+opencv-python>=4.9
+numpy>=1.26
+torch>=2.2          # install torch+cuda separately via conda first; this pins the rest
+torchvision>=0.17
+
+# Lightweight deep matchers (primary targets)
+# XFeat (loaded dynamically via torch.hub; no pip install needed)
+
+# SuperPoint + LightGlue (official repo covers SP, LightGlue, ALIKED, DISK)
+lightglue @ git+https://github.com/cvg/LightGlue.git
+
+# ALIKED (comes bundled inside LightGlue extras; also standalone)
+# ponytail: weights are auto-downloaded on first run
+
+# LoFTR
+kornia>=0.7          # kornia.feature.LoFTR is the lightest install path
+tartanair
+# Object tracker alternatives (SiamMask successor / MixFormer)
+# MixFormer: install from source
+#   pip install git+https://github.com/MCG-NJU/MixFormer.git
+# ponytail: heavy optional; skip until tracker benchmark phase
+
+# Classical baselines (covered by opencv-python above: ORB, SIFT, AKAZE, Lucas-Kanade)
+# No extra packages needed.
+
+# Benchmarking & logging
+tabulate>=0.9
+tqdm>=4.66
+matplotlib>=3.8      # optional: result plots
+
+# TensorRT Python bindings are installed via system wheel from Jetson JetPack;
+# do NOT pip-install tensorrt on Orin - it conflicts. Stub listed for clarity:
+# tensorrt  # <- install via: sudo apt install python3-libnvinfer-dev
+
+# Optional: ONNX export path
+onnx>=1.16
+onnxruntime-gpu>=1.18   # CPU fallback available as onnxruntime
