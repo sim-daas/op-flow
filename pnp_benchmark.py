@@ -16,9 +16,9 @@ def read_depth(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset",  required=True, help="Directory of images (e.g. image_lcam_front)")
-    ap.add_argument("--depth",    required=True, help="Directory of depth maps (e.g. depth_lcam_front)")
-    ap.add_argument("--poses",    required=True, help="GT pose file (TartanAir format)")
+    ap.add_argument("--dataset",  default="dataset/AbandonedFactory/Data_hard/P003/image_lcam_front", required=False, help="Directory of images (e.g. image_lcam_front)")
+    ap.add_argument("--depth",    default="dataset/AbandonedFactory/Data_hard/P003/depth_lcam_front", required=False, help="Directory of depth maps (e.g. depth_lcam_front)")
+    ap.add_argument("--poses",    default="dataset/AbandonedFactory/Data_hard/P003/pose_lcam_front.txt", required=False, help="GT pose file (TartanAir format)")
     ap.add_argument("--method",   default="xfeat", choices=["xfeat", "superpoint", "aliked", "loftr", "roma", "silk", "dedode", "r2d2"])
     ap.add_argument("--gap",      type=int, default=1, help="Frame gap for matching")
     ap.add_argument("--focal",    type=float, default=320.0, help="Focal length in pixels")
@@ -51,16 +51,27 @@ def main():
     dist_coeffs = np.zeros(4)
 
     total_ms = 0.0
+    t_read_total = t_prep_total = t_detect_total = t_match_total = t_pnp_total = 0.0
+    
     rot_errors, trans_errors, trans_scale_errors = [], [], []
     inlier_ratios = []
 
     feat_cache = {}
 
     def get_feat(idx):
+        nonlocal t_read_total, t_prep_total, t_detect_total
         if idx in feat_cache: return feat_cache[idx]
+        
+        t0 = time.perf_counter()
         img = cv2.imread(img_files[idx])
+        t_read_total += (time.perf_counter() - t0) * 1000
+        
         prep = matcher.prep(img)
         feat = matcher.detect(prep)
+        tp, td, _ = matcher.timer.get_and_reset()
+        
+        t_prep_total += tp
+        t_detect_total += td
         feat_cache[idx] = feat
         return feat
 
@@ -77,9 +88,13 @@ def main():
         kp1, kp2 = matcher.match(feat_a, feat_b)
         dt = (time.perf_counter() - t0) * 1000
         total_ms += dt
+        
+        _, _, tm = matcher.timer.get_and_reset()
+        t_match_total += tm
 
         # -- PnP Pose Evaluation --
         # 1. Backproject kp1 using depth map of frame A
+        t0_pnp = time.perf_counter()
         depth_a = read_depth(depth_files[idx_a])
         
         pts3d = []
@@ -99,10 +114,20 @@ def main():
         pts2d = np.array(pts2d, dtype=np.float32)
 
         if len(pts3d) >= 10:
-            # PnP gives R, t such that X_b = R * X_a + t
-            success, rvec, t_est, inliers = cv2.solvePnPRansac(pts3d, pts2d, K, dist_coeffs, reprojectionError=3.0, iterationsCount=100)
+            # Tighten PnP parameters for optimal accuracy
+            success, rvec, t_est, inliers = cv2.solvePnPRansac(
+                pts3d, pts2d, K, dist_coeffs, 
+                reprojectionError=1.5, iterationsCount=1000, flags=cv2.SOLVEPNP_EPNP
+            )
             
             if success and inliers is not None:
+                # Refine pose using Levenberg-Marquardt on the inliers
+                inlier_pts3d = pts3d[inliers].reshape(-1, 3)
+                inlier_pts2d = pts2d[inliers].reshape(-1, 2)
+                rvec, t_est = cv2.solvePnPRefineLM(inlier_pts3d, inlier_pts2d, K, dist_coeffs, rvec, t_est)
+                
+                t_pnp_total += (time.perf_counter() - t0_pnp) * 1000
+                
                 R_est, _ = cv2.Rodrigues(rvec)
                 n_inliers = len(inliers)
                 inlier_ratio = n_inliers / len(pts3d)
@@ -166,6 +191,21 @@ def main():
         print(f"  Avg Inlier Ratio:      {np.mean(inlier_ratios)*100:.1f}%")
         fail = (n_pairs - len(rot_errors)) / n_pairs * 100
         print(f"  Pose Recovery Fails:   {fail:.1f}%")
+
+    print("\n─── Time Statistics ───────────────────────")
+    print(f"  Image Reading:      {t_read_total:.1f} ms")
+    print(f"  Preprocessing:      {t_prep_total:.1f} ms")
+    print(f"  Keypoint Detection: {t_detect_total:.1f} ms")
+    print(f"  Matching:           {t_match_total:.1f} ms")
+    print(f"  PnP (Solve+Refine): {t_pnp_total:.1f} ms")
+    total_time = t_read_total + t_prep_total + t_detect_total + t_match_total + t_pnp_total
+    
+    # Calculate pure pipeline FPS (Prep + Detect + Match + PnP) excluding IO
+    pipe_time = t_prep_total + t_detect_total + t_match_total + t_pnp_total
+    avg_pipe_ms = pipe_time / n_pairs if n_pairs > 0 else 0
+    print(f"  Total (excl. Read): {pipe_time:.1f} ms")
+    if avg_pipe_ms > 0:
+        print(f"  Pipeline FPS:       {1000.0/avg_pipe_ms:.1f} FPS")
 
 if __name__ == "__main__":
     main()
