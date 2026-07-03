@@ -3,60 +3,21 @@ Video tracker using sparse deep matching.
 Reads an input video, matches consecutive frames, and outputs a video with drawn tracks.
 """
 import argparse
+import time
 import cv2
 import numpy as np
-import torch
 
-def build_matcher(name):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if name == "xfeat":
-        return torch.hub.load('verlab/accelerated_features', 'XFeat', pretrained=True, top_k=1024).eval().to(device)
-    elif name in ("superpoint", "lightglue"):
-        from lightglue import LightGlue, SuperPoint
-        ext = SuperPoint(max_num_keypoints=1024).eval().to(device)
-        mat = LightGlue(features="superpoint").eval().to(device)
-        return (ext, mat)
-    raise ValueError(f"Method {name} not supported.")
-
-def extract_and_match(matcher, name, img1, img2):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    def _prep(img):
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        return torch.from_numpy(rgb).permute(2, 0, 1).unsqueeze(0).to(device)
-        
-    if name == "xfeat":
-        with torch.inference_mode():
-            out1 = matcher.detectAndCompute(_prep(img1), top_k=1024)[0]
-            out2 = matcher.detectAndCompute(_prep(img2), top_k=1024)[0]
-            idxs0, idxs1 = matcher.match(out1["descriptors"], out2["descriptors"])
-            kp1 = out1["keypoints"][idxs0].cpu().numpy()
-            kp2 = out2["keypoints"][idxs1].cpu().numpy()
-            return kp1, kp2
-    else:
-        from lightglue.utils import rbd
-        ext, mat = matcher
-        with torch.inference_mode():
-            f1 = ext.extract(_prep(img1))
-            f2 = ext.extract(_prep(img2))
-            out = mat({"image0": f1, "image1": f2})
-            f1, f2, out = [rbd(x) for x in [f1, f2, out]]
-            kp1 = f1["keypoints"].cpu().numpy()
-            kp2 = f2["keypoints"].cpu().numpy()
-            matches = out["matches"].cpu().numpy()
-            if len(matches) == 0:
-                return np.empty((0,2)), np.empty((0,2))
-            return kp1[matches[..., 0]], kp2[matches[..., 1]]
+from matcher_util import get_matcher
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--video", required=True, help="Path to input video (e.g. video.mp4)")
     ap.add_argument("--out", required=True, help="Path to output video (e.g. out.mp4)")
-    ap.add_argument("--method", default="xfeat", choices=["xfeat", "superpoint"])
+    ap.add_argument("--method", default="xfeat", choices=["xfeat", "superpoint", "aliked", "loftr", "roma", "silk", "dedode", "r2d2"])
     args = ap.parse_args()
 
     print(f"Loading {args.method}...")
-    matcher = build_matcher(args.method)
+    matcher = get_matcher(args.method)
     
     cap = cv2.VideoCapture(args.video)
     if not cap.isOpened():
@@ -70,21 +31,46 @@ def main():
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(args.out, fourcc, fps, (w, h))
     
+    t_read_total = 0.0
+    
+    t0 = time.perf_counter()
     ret, prev_frame = cap.read()
+    t_read_total += (time.perf_counter() - t0) * 1000
     if not ret:
         print("Empty video.")
         return
+        
+    # Process first frame
+    t0 = time.perf_counter()
+    prev_prep = matcher.prep(prev_frame)
+    prev_feat = matcher.detect(prev_prep)
+    t_p, t_d, t_m = matcher.timer.get_and_reset()
+    
+    t_prep_total = t_p
+    t_detect_total = t_d
+    t_match_total = t_m
+    t_viz_total = 0.0
         
     frame_idx = 1
     print(f"Processing video ({w}x{h} @ {fps} FPS)...")
     
     while True:
+        t0 = time.perf_counter()
         ret, curr_frame = cap.read()
+        t_read_total += (time.perf_counter() - t0) * 1000
         if not ret:
             break
             
-        kp1, kp2 = extract_and_match(matcher, args.method, prev_frame, curr_frame)
+        curr_prep = matcher.prep(curr_frame)
+        curr_feat = matcher.detect(curr_prep)
+        kp1, kp2 = matcher.match(prev_feat, curr_feat)
         
+        t_p, t_d, t_m = matcher.timer.get_and_reset()
+        t_prep_total += t_p
+        t_detect_total += t_d
+        t_match_total += t_m
+        
+        t0 = time.perf_counter()
         # Draw matches as optical flow lines on the current frame
         viz = curr_frame.copy()
         for p1, p2 in zip(kp1, kp2):
@@ -97,7 +83,9 @@ def main():
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                     
         out.write(viz)
-        prev_frame = curr_frame
+        t_viz_total += (time.perf_counter() - t0) * 1000
+        
+        prev_feat = curr_feat
         
         frame_idx += 1
         if frame_idx % 30 == 0:
@@ -106,6 +94,14 @@ def main():
     cap.release()
     out.release()
     print(f"Done. Saved to {args.out}")
+    print("\n--- Time Statistics ---")
+    print(f"Video Unpacking (Read): {t_read_total:.1f} ms")
+    print(f"Preprocessing:          {t_prep_total:.1f} ms")
+    print(f"Keypoint Detection:     {t_detect_total:.1f} ms")
+    print(f"Matching:               {t_match_total:.1f} ms")
+    print(f"Visualization & Write:  {t_viz_total:.1f} ms")
+    total_time = t_read_total + t_prep_total + t_detect_total + t_match_total + t_viz_total
+    print(f"Total Processing Time:  {total_time:.1f} ms")
 
 if __name__ == "__main__":
     main()
