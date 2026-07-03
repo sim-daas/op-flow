@@ -1,6 +1,8 @@
 # Core vision & numerics
 opencv-python>=4.9
 numpy>=1.26
+scipy>=1.11
+perlin-noise>=1.12
 torch>=2.2          # install torch+cuda separately via conda first; this pins the rest
 torchvision>=0.17
 

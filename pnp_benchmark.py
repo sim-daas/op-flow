@@ -16,14 +16,18 @@ def read_depth(path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dataset",  default="dataset/AbandonedFactory/Data_hard/P003/image_lcam_front", required=False, help="Directory of images (e.g. image_lcam_front)")
-    ap.add_argument("--depth",    default="dataset/AbandonedFactory/Data_hard/P003/depth_lcam_front", required=False, help="Directory of depth maps (e.g. depth_lcam_front)")
-    ap.add_argument("--poses",    default="dataset/AbandonedFactory/Data_hard/P003/pose_lcam_front.txt", required=False, help="GT pose file (TartanAir format)")
+    ap.add_argument("--dataset",  default="dataset/AbandonedFactory/Data_hard/P000/image_lcam_front", required=False, help="Directory of images (e.g. image_lcam_front)")
+    ap.add_argument("--depth",    default="dataset/AbandonedFactory/Data_hard/P000/depth_lcam_front", required=False, help="Directory of depth maps (e.g. depth_lcam_front)")
+    ap.add_argument("--poses",    default="dataset/AbandonedFactory/Data_hard/P000/pose_lcam_front.txt", required=False, help="GT pose file (TartanAir format)")
     ap.add_argument("--method",   default="xfeat", choices=["xfeat", "superpoint", "aliked", "loftr", "roma", "silk", "dedode", "r2d2"])
     ap.add_argument("--gap",      type=int, default=1, help="Frame gap for matching")
     ap.add_argument("--focal",    type=float, default=320.0, help="Focal length in pixels")
     ap.add_argument("--cx",       type=float, default=320.0, help="Principal point X")
     ap.add_argument("--cy",       type=float, default=240.0, help="Principal point Y")
+    ap.add_argument("--reproj_err", type=float, default=3.0, help="RANSAC reprojection error threshold")
+    ap.add_argument("--iters",    type=int, default=100, help="RANSAC iterations")
+    ap.add_argument("--epnp",     action="store_true", help="Use SOLVEPNP_EPNP instead of iterative")
+    ap.add_argument("--refine",   action="store_true", help="Run solvePnPRefineLM on inliers")
     args = ap.parse_args()
 
     poses = load_poses(args.poses)
@@ -114,19 +118,20 @@ def main():
         pts2d = np.array(pts2d, dtype=np.float32)
 
         if len(pts3d) >= 10:
-            # Tighten PnP parameters for optimal accuracy
+            flags = cv2.SOLVEPNP_EPNP if args.epnp else cv2.SOLVEPNP_ITERATIVE
             success, rvec, t_est, inliers = cv2.solvePnPRansac(
                 pts3d, pts2d, K, dist_coeffs, 
-                reprojectionError=1.5, iterationsCount=1000, flags=cv2.SOLVEPNP_EPNP
+                reprojectionError=args.reproj_err, iterationsCount=args.iters, flags=flags
             )
             
             if success and inliers is not None:
-                # Refine pose using Levenberg-Marquardt on the inliers
-                inlier_pts3d = pts3d[inliers].reshape(-1, 3)
-                inlier_pts2d = pts2d[inliers].reshape(-1, 2)
-                rvec, t_est = cv2.solvePnPRefineLM(inlier_pts3d, inlier_pts2d, K, dist_coeffs, rvec, t_est)
-                
-                t_pnp_total += (time.perf_counter() - t0_pnp) * 1000
+                if args.refine:
+                    inlier_pts3d = pts3d[inliers].reshape(-1, 3)
+                    inlier_pts2d = pts2d[inliers].reshape(-1, 2)
+                    rvec, t_est = cv2.solvePnPRefineLM(inlier_pts3d, inlier_pts2d, K, dist_coeffs, rvec, t_est)
+                    t_pnp_total += (time.perf_counter() - t0_pnp) * 1000
+                else:
+                    t_pnp_total += (time.perf_counter() - t0_pnp) * 1000
                 
                 R_est, _ = cv2.Rodrigues(rvec)
                 n_inliers = len(inliers)
