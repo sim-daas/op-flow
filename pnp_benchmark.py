@@ -58,7 +58,16 @@ def main():
     t_read_total = t_prep_total = t_detect_total = t_match_total = t_pnp_total = 0.0
     
     rot_errors, trans_errors, trans_scale_errors = [], [], []
+    ate_errors = []
     inlier_ratios = []
+
+    # OpenCV GT poses for ATE
+    T_ned2cv = np.array([[0, 1, 0], [0, 0, 1], [1, 0, 0]], dtype=float)
+    poses_cv = []
+    for p in poses:
+        T = np.eye(4); T[:3,:3] = T_ned2cv @ p[:3,:3] @ T_ned2cv.T; T[:3,3] = T_ned2cv @ p[:3,3]
+        poses_cv.append(T)
+    T_global_est = np.eye(4)
 
     feat_cache = {}
 
@@ -169,6 +178,13 @@ def main():
                 # Absolute magnitude error in meters
                 t_err_scale = np.linalg.norm(t_est - t_gt)
 
+                # Accumulate global pose for ATE
+                T_rel_est = np.eye(4); T_rel_est[:3,:3] = R_est; T_rel_est[:3,3] = t_est
+                T_global_est = T_global_est @ np.linalg.inv(T_rel_est)
+                T_gt_curr_in_map = np.linalg.inv(poses_cv[0]) @ poses_cv[idx_b]
+                ate_err = np.linalg.norm(T_global_est[:3,3] - T_gt_curr_in_map[:3,3])
+                ate_errors.append(ate_err)
+
                 rot_errors.append(r_err)
                 trans_errors.append(t_err_dir)
                 trans_scale_errors.append(t_err_scale)
@@ -176,7 +192,7 @@ def main():
 
                 if pair_num % 10 == 0:
                     print(f"Pair {pair_num:04d} [{idx_a:04d}→{idx_b:04d}]  inliers: {n_inliers}/{len(pts3d)}  "
-                          f"R_err: {r_err:5.2f}°  t_dir_err: {t_err_dir:5.2f}°  t_abs_err: {t_err_scale:5.2f}m")
+                          f"R_err: {r_err:5.2f}°  t_dir_err: {t_err_dir:5.2f}°  t_abs_err: {t_err_scale:5.2f}m  ATE: {ate_err*100:5.1f}cm")
             else:
                 if pair_num % 10 == 0: print(f"Pair {pair_num:04d} PnP Failed")
         else:
@@ -193,6 +209,7 @@ def main():
         print(f"  Avg Rot Error:         {np.mean(rot_errors):.2f}°  (med: {np.median(rot_errors):.2f}°)")
         print(f"  Avg Trans Dir Error:   {np.mean(trans_errors):.2f}°  (med: {np.median(trans_errors):.2f}°)")
         print(f"  Avg Trans Abs Error:   {np.mean(trans_scale_errors):.3f} m (med: {np.median(trans_scale_errors):.3f} m)")
+        print(f"  Avg Traj ATE Error:    {np.mean(ate_errors)*100:.1f} cm (med: {np.median(ate_errors)*100:.1f} cm)")
         print(f"  Avg Inlier Ratio:      {np.mean(inlier_ratios)*100:.1f}%")
         fail = (n_pairs - len(rot_errors)) / n_pairs * 100
         print(f"  Pose Recovery Fails:   {fail:.1f}%")

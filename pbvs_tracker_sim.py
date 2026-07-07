@@ -215,7 +215,7 @@ def main():
         descs = feat["descriptors"].cpu().numpy()
         scores = feat["scores"].cpu().numpy() if "scores" in feat else None
 
-        # kps, descs = bucket(kps, scores, descs, a.grid_size)
+        kps, descs = bucket(kps, scores, descs, a.grid_size)
         if not len(kps): continue
 
         # sub-pixel refinement
@@ -338,22 +338,26 @@ def main():
         except np.linalg.LinAlgError:
             prev_fidx = idx; continue
 
-        # ── Accuracy vs GT ────────────────────────────────────────────────────
-        # GT poses are cam-in-world. Convert to cam-in-map: T_cam_in_map_gt = inv(poses_cv[0]) @ poses_cv[k]
-        # delta in map frame: inv(T_cam_map_prev) @ T_cam_map_curr
-        T_gt_prev_in_map = np.linalg.inv(poses_cv[0]) @ poses_cv[prev_fidx]
+        # ── Accuracy vs GT (Global Absolute Trajectory Error) ─────────────────
+        # Evaluate against the map origin (t=0) to measure absolute drift from target
         T_gt_curr_in_map = np.linalg.inv(poses_cv[0]) @ poses_cv[idx]
-        delta_gt = np.linalg.inv(T_gt_prev_in_map) @ T_gt_curr_in_map
 
-        rot_errs.append(rotation_error_deg(R_final_orth, delta_gt[:3,:3]))
-        trans_errs.append(translation_angle_deg(delta_final[:3,3], delta_gt[:3,3]))
-        scale_errs.append(np.linalg.norm(delta_final[:3,3] - delta_gt[:3,3]))
+        R_est_global = T_cam_in_map[:3, :3]
+        t_est_global = T_cam_in_map[:3, 3]
+        
+        try:
+            U, _, Vt = np.linalg.svd(R_est_global); R_est_global = U @ Vt
+        except np.linalg.LinAlgError:
+            pass
+
+        rot_errs.append(rotation_error_deg(R_est_global, T_gt_curr_in_map[:3,:3]))
+        scale_errs.append(np.linalg.norm(t_est_global - T_gt_curr_in_map[:3,3]))
         inl_ratios.append(len(inl)/len(good))
         n_pnp_ok += 1
 
         if fi % 20 == 0:
             print(f"Frame {idx:04d}: inliers={len(inl)}/{len(good)}  "
-                  f"R_err={rot_errs[-1]:.2f}°  t_err={scale_errs[-1]*100:.1f}cm  "
+                  f"R_err={rot_errs[-1]:.2f}°  ATE={scale_errs[-1]*100:.1f}cm  "
                   f"map={len(map_pts)}  sanity_rej={n_sanity_rej}")
 
         # ── Triangulate new points ────────────────────────────────────────────
@@ -408,9 +412,7 @@ def main():
         print(f"\n  ── Accuracy ─────────────────────────────────────────────")
         print(f"  Avg Rot Error:       {np.mean(rot_errs):.2f}°  "
               f"(med {np.median(rot_errs):.2f}°)")
-        print(f"  Avg Trans Dir Error: {np.mean(trans_errs):.2f}°  "
-              f"(med {np.median(trans_errs):.2f}°)")
-        print(f"  Avg Trans Abs Error: {np.mean(scale_errs)*100:.1f}cm  "
+        print(f"  Avg Abs Traj Error (ATE): {np.mean(scale_errs)*100:.1f}cm  "
               f"(med {np.median(scale_errs)*100:.1f}cm)")
         print(f"  Avg Inlier Ratio:    {np.mean(inl_ratios)*100:.1f}%")
         print(f"  Pose recovery rate:  {n_pnp_ok/max(n_pnp_attempted,1)*100:.1f}%")

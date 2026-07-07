@@ -64,6 +64,7 @@ Confusing these is the #1 cause of the "Sanity Filter rejects everything" bug.
 | Integer pixel quantization | 1px → ~3cm at 1.5m | `cv2.cornerSubPix` (Opt-1) |
 | ZED depth edge bleed | Wildly wrong 3D anchors | 3×3 variance gate (Opt-2) |
 | Clustered keypoints | PnP rotation/translation ambiguity | Grid bucketing (Opt-3) |
+| Coplanar anchors (downward view) | High rotation error (>20°) due to planar ambiguity | IMU/VIO rotation prior lock |
 | VIO drift | Slow pose accumulation | EKF fusing PnP + T265 (Opt-4) |
 | VO drift in triangulated pts | Map scale compression after Gen-0 exits FOV | Covariance-weighted PnP + sanity filter |
 
